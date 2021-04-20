@@ -18,6 +18,8 @@ At the moment, the Qiskit version required is
 ## Content of the repository
 
 - **pVQD.py** : contains the actual class of the pVQD algorithm , with methods to evaluate the overlap, the gradient, the observables and run 
-- **create_hamiltonians.py** : contains functions to prepare Pauli operators and Hamiltonians for different physical systems (e.g. Ising model, Heisenberg model, ...)
+- **pauli_function.py** : contains functions to prepare Pauli operators and Hamiltonians for different physical systems. In this case, we create the Transverse Field Ising Model
 - **ansatze.py** : a file to contain the functions that return quantum circuit ansatze, in the future it will be updated with new ansatze
 - **example.py** : an example to use the pVQD to simulate the Transverse Field Ising Model on an open chain of 3 qubits
+- **plotter.py** : simple script to plot the results of the pVQD calculations and compare them to the exact classical simulation
+- **data** : a folder that contains some pre-produced data to plot
