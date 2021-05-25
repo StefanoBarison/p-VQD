@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 
 from qiskit.quantum_info 			  import Pauli
-from qiskit.aqua.operators 			  import PauliOp, SummedOp
+from qiskit.opflow      			  import PauliOp, SummedOp
 
 def generate_pauli(idx_x,idx_z,n):
 	'''

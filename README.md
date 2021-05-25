@@ -5,15 +5,17 @@ This repository contains the source code of the p-VQD algorithm to reproduce the
 At the moment, the Qiskit version required is
 
 
-| qiskit              | 0.24.0 |
-|---------------------|--------|
-| qiskit-aer          | 0.7.6  |
-| qiskit-aqua         | 0.8.2  |
-| qiskit-ibm-provider | 0.12.1 |
-| qiskit-ignis        | 0.5.2  |
-| qiskit-terra        | 0.16.4 |
-
-
+|qiskit                   | 0.25.0  |
+|-------------------------|---------|
+|qiskit-aer               | 0.8.0   |
+|qiskit-aqua              | 0.9.0   |
+|qiskit-finance           | 0.1.0   |
+|qiskit-ibmq-provider     | 0.12.2  |
+|qiskit-ignis             | 0.6.0   |
+|qiskit-machine-learning  | 0.1.0   |
+|qiskit-nature            | 0.1.0   |
+|qiskit-optimization      | 0.1.0   |
+|qiskit-terra             | 0.17.0  |
 
 ## Content of the repository
 
@@ -23,3 +25,9 @@ At the moment, the Qiskit version required is
 - **example.py** : an example to use the pVQD to simulate the Transverse Field Ising Model on an open chain of 3 qubits
 - **plotter.py** : simple script to plot the results of the pVQD calculations and compare them to the exact classical simulation
 - **data** : a folder that contains some pre-produced data to plot
+
+
+
+## Updates
+
+- **Update 1** : the code has been updated to run with Qiskit 0.25.0, and uses new functions that have been introduced with it, like the PauliSumOp operator. Moreover, it creates the circuit only once in order to speed up calculations. Finally, the local cost function alternative proposed by Cerezo et al. (https://www.nature.com/articles/s41467-021-21728-w) has been introduced as a possibility.

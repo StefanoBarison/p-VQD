@@ -5,11 +5,10 @@ from qiskit import QuantumCircuit, ClassicalRegister, QuantumRegister
 
 #=========================================
 
-def hweff_ansatz(p):
-	n_spins = 3
-	count = 0
+def hweff_ansatz(n_spins,depth,p):
+	
 	circuit = QuantumCircuit(n_spins)
-	depth = 3
+	count = 0
 
 	for j in range(depth):
 

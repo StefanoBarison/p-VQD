@@ -6,21 +6,18 @@ import matplotlib.pyplot as plt
 from scipy   import  linalg as LA 
 
 
-
 import qiskit
-from qiskit.quantum_info 			     import Pauli
-from qiskit.aqua.operators 			     import PauliOp, SummedOp
-from qiskit.aqua.operators.evolutions    import Trotter, PauliTrotterEvolution
+from qiskit                               import Aer, execute
+from qiskit.quantum_info 			      import Pauli
+from qiskit.utils                         import QuantumInstance
+from qiskit.opflow       			      import PauliOp, SummedOp, CircuitSampler, StateFn
+from qiskit.circuit                       import ParameterVector
+from qiskit.opflow.evolutions             import Trotter, PauliTrotterEvolution
 
-from qiskit.aqua.operators.state_fns     import CircuitStateFn
-from qiskit.aqua.operators.expectations  import PauliExpectation, AerPauliExpectation, MatrixExpectation
-from qiskit.aqua.operators.primitive_ops import CircuitOp
-from qiskit.aqua.operators            	 import Z, I
-
-
-from qiskit 							 import Aer, execute
-from qiskit.aqua 						 import QuantumInstance
-from qiskit.aqua.operators 				 import CircuitSampler, StateFn
+from qiskit.opflow.state_fns      import CircuitStateFn
+from qiskit.opflow.expectations   import PauliExpectation, AerPauliExpectation
+from qiskit.opflow.primitive_ops  import CircuitOp
+from qiskit.opflow                import Z, I
 
 from pauli_function import *
 
@@ -30,7 +27,9 @@ from pauli_function import *
 # are varied in order to follow the unitary evolution
 
 # Useful functions
+
 def projector_zero(n_qubits):
+	# This function create the global projector |00...0><00...0|
 	from qiskit.aqua.operators            import Z, I
 
 	prj = (1/np.power(2,n_qubits))*(I+Z)
@@ -40,96 +39,153 @@ def projector_zero(n_qubits):
 
 	return prj
 
-
-def projector_zero_local(k,n_qubits):
-	from qiskit.aqua.operators            import Z, I
-
+def projector_zero_local(n_qubits):
+	# This function creates the local version of the cost function 
+	# proposed by Cerezo et al: https://www.nature.com/articles/s41467-021-21728-w
+	from qiskit.opflow          import Z, I
 	
+	tot_prj = 0
+	
+	for k in range(n_qubits):
+		prj_list = [I for i in range(n_qubits)]
+		prj_list[k] = 0.5*(I+Z)
+		prj = prj_list[0]
 
-	prj_list = [I for i in range(n_qubits)]
-	prj_list[k] = 0.5*(I+Z)
+		for a in range(1,len(prj_list)):
+			prj = prj^prj_list[a]
 
-	prj = prj_list[0]
+		#print(prj)
 
-	for a in range(1,len(prj_list)):
-		prj = prj^prj_list[a]
+		tot_prj += prj
 
-	return prj
+	tot_prj = (1/n_qubits)*tot_prj
+	
+	return tot_prj
+
 
 def ei(i,n):
 	vi = np.zeros(n)
 	vi[i] = 1.0
 	return vi[:]
 
-
+## Actual pVQD class
 
 class pVQD:
 
-	def __init__(self,hamiltonian,ansatz,parameters,initial_shift,instance,shots):
+	def __init__(
+		self,
+		hamiltonian,
+		ansatz,
+		ansatz_reps,
+		parameters,
+		initial_shift,
+		instance,
+		shots
+		):
 
-		'''
-		Args:
 		
-		parameters    : [numpy.array] an array containing the parameters of the ansatz
-		initial_shift : [numpy.array] an array containing the initial guess of shifts
-
-		'''
 		self.hamiltonian     = hamiltonian
-		self.ansatz          = ansatz
 		self.instance        = instance 
 		self.parameters      = parameters
 		self.num_parameters  = len(parameters)
 		self.shift           = initial_shift
 		self.shots           = shots
+		self.depth           = ansatz_reps
+		self.num_qubits      = hamiltonian.num_qubits
+
+		## Initialize quantities that will be equal all over the calculation
+		self.params_vec      = ParameterVector('p',self.num_parameters)
+		self.ansatz          = ansatz(self.num_qubits,self.depth,self.params_vec)
 
 
+		# ParameterVector for left and right circuit
 
-	# This function calculate overlap and gradient of the overlap using a global operator on the |0><0| state
+		self.left  = ParameterVector('l', self.ansatz.num_parameters)
+		self.right = ParameterVector('r', self.ansatz.num_parameters)
 
-	def measure_overlap_and_gradient(self,time_step):
-		# The aim of this function is to measure  
-		# the quantity |<psi(w+dw)|U(dt)|psi(w)>|^2 and 
-		# its gradient wrt dw
+		# ParameterVector for measuring abservables
+		self.obs_params = ParameterVector('θ',self.ansatz.num_parameters)
+
 		
-		# The operator to be measured here is |0><0|
-		prj_zero = StateFn(projector_zero(self.hamiltonian.num_qubits),is_measurement = True)
 
-		# Now let's create the Trotter operator 
+	def construct_total_circuit(self,time_step):
+		## This function creates the circuit that will be used to evaluate overlap and its gradient
 
-		step_h = time_step*self.hamiltonian
+		# First, create the Trotter step
 
+		step_h  = time_step*self.hamiltonian
 		trotter = PauliTrotterEvolution(reps=1)
-		U_dt    =trotter.convert(step_h.exp_i()).to_circuit()
-		# let's construct the complete circuit V^\dag(w+dw)U(dt)V(w)
-
-		# Measure the overlap and its gradient 
-		nparameters  = len(self.parameters)
-		shift_parameters = self.parameters + self.shift 
-
-		wfn_circuits = [CircuitStateFn(self.ansatz(self.parameters)+U_dt+self.ansatz(shift_parameters).inverse())]
+		U_dt    = trotter.convert(step_h.exp_i()).to_circuit()
 
 
+		
+		l_circ  = self.ansatz.assign_parameters({self.params_vec: self.left})
+		r_circ  = self.ansatz.assign_parameters({self.params_vec: self.right})
+
+		## Projector
+		zero_prj = StateFn(projector_zero(self.hamiltonian.num_qubits),is_measurement = True)
+		state_wfn = zero_prj @ StateFn(r_circ +U_dt+ l_circ.inverse())
+	
+
+		return state_wfn
+
+
+	def construct_total_circuit_local(self,time_step):
+		## This function creates the circuit that will be used to evaluate overlap and its gradient, in a local fashion
+
+		# First, create the Trotter step
+
+		step_h  = time_step*self.hamiltonian
+		trotter = PauliTrotterEvolution(reps=1)
+		U_dt    = trotter.convert(step_h.exp_i()).to_circuit()
+
+
+		
+		l_circ  = self.ansatz.assign_parameters({self.params_vec: self.left})
+		r_circ  = self.ansatz.assign_parameters({self.params_vec: self.right})
+
+		## Projector
+		zero_prj = StateFn(projector_zero_local(self.hamiltonian.num_qubits),is_measurement = True)
+		state_wfn = zero_prj @ StateFn(r_circ +U_dt+ l_circ.inverse())
+	
+
+		return state_wfn
+
+
+	# This function calculate overlap and gradient of the overlap
+
+	def compute_overlap_and_gradient(self,state_wfn,parameters,shift,expectator,sampler):
+
+		nparameters = len(parameters)
+		# build dictionary of parameters to values
+		# {left[0]: parameters[0], .. ., right[0]: parameters[0] + shift[0], ...}
+
+		# First create the dictionary for overlap
+		values_dict = [dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift).tolist()))]
+		
+
+		# Then the values for the gradient
 		for i in range(nparameters):
-			wfn_circuits.append(CircuitStateFn(self.ansatz(self.parameters)+U_dt+self.ansatz(shift_parameters+ei(i,nparameters)*np.pi/2.0).inverse()))
-			wfn_circuits.append(CircuitStateFn(self.ansatz(self.parameters)+U_dt+self.ansatz(shift_parameters-ei(i,nparameters)*np.pi/2.0).inverse()))
+			values_dict.append(dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift + ei(i,nparameters)*np.pi/2.0).tolist())))
+			values_dict.append(dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift - ei(i,nparameters)*np.pi/2.0).tolist())))
 
-		# Now measure circuits
+		# Now evaluate the circuits with the parameters assigned
+
 		results = []
 
-		for wfn in wfn_circuits:
-			braket     = prj_zero @ wfn
-			grouped    = PauliExpectation().convert(braket)
+		for values in values_dict:
+			sampled_op = sampler.convert(state_wfn,params=values)
 
-
-			sampled_op = CircuitSampler(self.instance).convert(grouped)
-			mean_value = sampled_op.eval().real
+			mean  = sampled_op.eval().real
+			#mean  = np.power(np.absolute(mean),2)
 			est_err = 0
 
+
 			if (not self.instance.is_statevector):
-				variance = PauliExpectation().compute_variance(sampled_op).real
+				variance = expectator.compute_variance(sampled_op).real
 				est_err  = np.sqrt(variance/self.shots)
 
-			results.append([mean_value,est_err])
+			results.append([mean,est_err])
 
 		E = np.zeros(2)
 		g = np.zeros((nparameters,2))
@@ -149,23 +205,98 @@ class pVQD:
 		return E,g 
 
 
+	## this function does the same thing but uses SPSA
 
-	def measure_aux_ops(self,pauli):
+	def compute_overlap_and_gradient_spsa(self,state_wfn,parameters,shift,expectator,sampler,count):
 
-		wfn = CircuitStateFn(self.ansatz(self.parameters))
-		op = StateFn(pauli,is_measurement = True)
+		nparameters = len(parameters)
+		# build dictionary of parameters to values
+		# {left[0]: parameters[0], .. ., right[0]: parameters[0] + shift[0], ...}
 
-		# Evaluate the aux operator given
+		# Define hyperparameters
+		c  = 0.1
+		a  = 0.16
+		A  = 1
+		alpha  = 0.602
+		gamma  = 0.101
+
+		a_k = a/np.power(A+count,alpha)
+		c_k = c/np.power(count,gamma)
+
+		# Determine the random shift
+
+		delta = np.random.binomial(1,0.5,size=nparameters)
+		delta = np.where(delta==0, -1, delta) 
+		delta = c_k*delta
+
+		# First create the dictionary for overlap
+		values_dict = [dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift).tolist()))]
+		
+
+		# Then the values for the gradient
+		
+		values_dict.append(dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift + delta).tolist())))
+		values_dict.append(dict(zip(self.right[:] + self.left[:], parameters.tolist() + (parameters + shift - delta).tolist())))
+
+		# Now evaluate the circuits with the parameters assigned
+
+		results = []
+
+		for values in values_dict:
+			sampled_op = sampler.convert(state_wfn,params=values)
+
+			mean  = sampled_op.eval()[0]
+			mean  = np.power(np.absolute(mean),2)
+			est_err = 0
+
+
+			if (not self.instance.is_statevector):
+				variance = expectator.compute_variance(sampled_op)[0].real
+				est_err  = np.sqrt(variance/self.shots)
+
+			results.append([mean,est_err])
+
+		E = np.zeros(2)
+		g = np.zeros((nparameters,2))
+
+		E[0],E[1] = results[0]
+
+		# and the gradient
+
+		rplus  = results[1]
+		rminus = results[2]
+
+		for i in range(nparameters):
+			# G      = (Ep - Em)/2Δ_i
+			# var(G) = var(Ep) * (dG/dEp)**2 + var(Em) * (dG/dEm)**2
+			g[i,:] = a_k*(rplus[0]-rminus[0])/(2.0*delta[i]),np.sqrt(rplus[1]**2+rminus[1]**2)/(2.0*delta[i])
+
+		self.overlap  = E
+		self.gradient = g
+
+		return E,g 
+
+
+	def measure_aux_ops(self,obs_wfn,pauli,parameters,expectator,sampler):
+
+		# This function calculates the expectation value of a given operator
+
+		# Prepare the operator and the parameters
+		wfn = StateFn(obs_wfn)
+		op  = StateFn(pauli,is_measurement = True)
+		values_obs = dict(zip(self.obs_params[:], parameters.tolist()))
+		
 		braket = op @ wfn
-		grouped    = PauliExpectation(group_paulis=True).convert(braket)
 
+		grouped    = expectator.convert(braket)
+		sampled_op = sampler.convert(grouped,params = values_obs)
 
-		sampled_op = CircuitSampler(self.instance).convert(grouped)
+		#print(sampled_op.eval())
 		mean_value = sampled_op.eval().real
 		est_err = 0
 
 		if (not self.instance.is_statevector):
-			variance = PauliExpectation().compute_variance(sampled_op).real
+			variance = expectator.compute_variance(sampled_op).real
 			est_err  = np.sqrt(variance/self.shots)
 
 		res = [mean_value,est_err]
@@ -194,9 +325,42 @@ class pVQD:
 		return new_shift
 
 
+	def run(
+		self,
+		ths,
+		timestep,
+		n_steps,
+		obs_dict={},
+		filename='algo_result.dat',
+		max_iter = 100,
+		opt='sgd',
+		cost_fun='global',
+		grad='param_shift',
+		initial_point=None
+		):
 
-	def run(self,ths,timestep,n_steps,obs_dict = None,filename='algo_result.dat',max_iter = 100,gradient='sgd',initial_point=None):
 
+		## initialize useful quantities once
+		if(self.instance.is_statevector and cost_fun == 'local'):
+			expectation = AerPauliExpectation()
+		else: 
+			expectation = PauliExpectation()
+	
+		sampler = CircuitSampler(self.instance)
+
+		## Now prepare the state in order to compute the overlap and its gradient
+		if cost_fun == 'global':
+			state_wfn = self.construct_total_circuit(timestep)
+		elif cost_fun == 'local':
+			state_wfn = self.construct_total_circuit_local(timestep)
+
+		state_wfn = expectation.convert(state_wfn)
+
+
+		## Also the standard state for measuring the observables
+		obs_wfn   = self.ansatz.assign_parameters({self.params_vec: self.obs_params})
+
+		#######################################################
 
 		times = [i*timestep for i in range(n_steps+1)]
 		tot_steps= 0
@@ -206,20 +370,21 @@ class pVQD:
 				print("TypeError: Initial parameters are not of the same size of circuit parameters")
 				return
 
-				
+
 			print("\nRestart from: ")
 			print(initial_point)
 			self.parameters = initial_point
 
 		print("Running the algorithm")
 
-		# prepare contaners for observables
+		#prepare observables for quench
+
 		if len(obs_dict) > 0:
 			obs_measure = {}
 			obs_error   = {}
 
 			for (obs_name,obs_pauli) in obs_dict.items():
-				first_measure                   = self.measure_aux_ops(obs_pauli)
+				first_measure                   = self.measure_aux_ops(obs_wfn,obs_pauli,self.parameters,expectation,sampler)
 				obs_measure[str(obs_name)]      = [first_measure[0]]
 				obs_error['err_'+str(obs_name)] = [first_measure[1]]
 
@@ -233,8 +398,8 @@ class pVQD:
 
 		params.append(list(self.parameters))
 
-		for i in range(n_steps):
 
+		for i in range(n_steps):
 
 			print('\n================================== \n')
 			print("Time slice:",i+1)
@@ -242,23 +407,34 @@ class pVQD:
 			print("Initial parameters:", self.parameters)
 			print('\n================================== \n')
 			
-
 			count = 0
 			self.overlap = [0.01,0]
 			g_norm = 1
-
-			if gradient == 'adam':
+			
+			if opt == 'adam':
 				m = np.zeros(len(self.parameters))
 				v = np.zeros(len(self.parameters))
-			
-			# Optimize the shift
 
-			while self.overlap[0] < ths and count < max_iter: 
+			if opt == 'momentum':
+				old_grad = np.zeros(len(self.parameters))
+				g        = np.zeros((len(self.parameters),2))
+
+
+
+			while self.overlap[0] < ths and count < max_iter:
 				print("Shift optimizing step:",count+1)
 				count = count +1 
-				E,g = self.measure_overlap_and_gradient(timestep)
 
-				tot_steps= tot_steps+1
+				if opt == 'momentum':
+					old_grad = np.asarray(g[:,0])
+				## Measure energy and gradient
+
+				if grad == 'param_shift':
+					E,g = self.compute_overlap_and_gradient(state_wfn,self.parameters,self.shift,expectation,sampler)
+				if grad == 'spsa':
+					E,g = self.compute_overlap_and_gradient_spsa(state_wfn,self.parameters,self.shift,expectation,sampler,count)
+				
+				tot_steps = tot_steps+1
 
 				if count == 1:
 					initial_fidelities.append(self.overlap[0])
@@ -267,55 +443,59 @@ class pVQD:
 				print('Overlap',self.overlap)
 				print('Gradient',self.gradient[:,0])
 
-				if gradient == 'adam':
+				if opt == 'adam':
 					print("\n Adam \n")
-					grad = np.asarray(g[:,0])
-					self.shift = np.asarray(self.adam_gradient(count,m,v,grad))
-				else:
+					meas_grad = np.asarray(g[:,0])
+					self.shift = np.asarray(self.adam_gradient(count,m,v,meas_grad))
+
+				if opt == 'momentum':
+					print("Momentum")
+					m_grad = np.asarray(g[:,0]) + 0.9*old_grad
+					self.shift = self.shift + m_grad
+
+				elif opt== 'sgd':
 					self.shift = self.shift + g[:,0]
 
 				#Norm of the gradient
 				g_vec = np.asarray(g[:,0])
 				g_norm = np.linalg.norm(g_vec)
-				print('Gradient norm:',g_norm)
+
 
 			# Update parameters
+
 
 			print('\n---------------------------------- \n')
 
 			print("Shift after optimizing:",self.shift)
 			print("New parameters:"        ,self.parameters + self.shift)
-
 			print("New overlap: "          ,self.overlap[0])
 
 			self.parameters = self.parameters + self.shift
 
 
+				
 			# Measure quantities and save them 
 			
 			if len(obs_dict) > 0:
 
 				for (obs_name,obs_pauli) in obs_dict.items():
-					run_measure   = self.measure_aux_ops(obs_pauli)
+					run_measure   = self.measure_aux_ops(obs_wfn,obs_pauli,self.parameters,expectation,sampler)
 					obs_measure[str(obs_name)].append(run_measure[0])
 					obs_error['err_'+str(obs_name)].append(run_measure[1])
-
 
 			counter.append(count)
 			fidelities.append(self.overlap[0])
 			err_fin_fid.append(self.overlap[1])
 			
+			
 			params.append(list(self.parameters))
 
 
-		# End of the algorithm
-
 		print("Total measurements:",tot_steps)
 		print("Measure per step:", tot_steps/n_steps)
-
+		
 		# Save data on file
 
-		# Prepare a dictionary with the data
 		log_data = {}
 		if len(obs_dict) > 0:
 			for (obs_name,obs_pauli) in obs_dict.items():
@@ -331,12 +511,4 @@ class pVQD:
 		log_data['params']      = list(params)
 		log_data['tot_steps']   = [tot_steps]
 
-		# Dump on file
 		json.dump(log_data, open( filename,'w+'))
-
-
-
-
-
-
-

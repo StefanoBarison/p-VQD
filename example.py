@@ -7,10 +7,11 @@ import json
 
 from qiskit import IBMQ, Aer
 from qiskit import QuantumCircuit, ClassicalRegister, QuantumRegister
+from qiskit.circuit import ParameterVector
 
-from qiskit.aqua                      import QuantumInstance
-from qiskit.aqua.operators            import Z, I, X, Y
-from qiskit.aqua.operators 			  import PauliOp, SummedOp
+from qiskit.utils                     import QuantumInstance
+from qiskit.opflow                    import Z, I, X, Y
+from qiskit.opflow         			  import PauliOp, SummedOp
 
 from pauli_function import *
 from pVQD			import *
@@ -33,7 +34,7 @@ depth = 3
 ### Example circ
 
 ex_params = np.zeros((depth+1)*spins +depth*(spins-1))
-wfn = hweff_ansatz(ex_params)
+wfn = hweff_ansatz(spins,depth,ex_params)
 
 
 ### Shift
@@ -49,7 +50,7 @@ print(wfn)
 print(H)
 
 ### Backend
-shots = 800
+shots = 8000
 backend  = Aer.get_backend('qasm_simulator')
 instance = QuantumInstance(backend=backend,shots=shots)
 
@@ -74,9 +75,26 @@ for (name,pauli) in obs.items():
 initial_point = None
 
 # Choose the gradient optimizer: 'sgd', 'adam'
-gradient = 'sgd'
+opt  = 'sgd'
+# Choose how to estimate the gradient on hardware: 'param_shift', 'spsa'
+grad = 'param_shift'
+# Choose which type of cost function use: 'global', 'local'
+cost = 'local'
 
 
-algo = pVQD(H,hweff_ansatz,ex_params,shift,instance,shots)
-algo.run(ths,dt,n_steps, obs_dict = obs,filename= 'data/trial_results.dat', max_iter = 50)
+algo = pVQD(hamiltonian   = H,
+			ansatz        = hweff_ansatz,
+			ansatz_reps   = depth,
+			parameters    = ex_params,
+			initial_shift = shift,
+			instance      = instance,
+			shots         = shots)
 
+algo.run(ths,dt,n_steps, 
+	     obs_dict      = obs,
+	     filename      = 'data/trial_results.dat',
+	     max_iter      = 50,
+	     opt           = opt,
+	     cost_fun      = cost,
+	     grad          = grad,
+	     initial_point = initial_point)
