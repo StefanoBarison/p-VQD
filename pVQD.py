@@ -30,12 +30,13 @@ from pauli_function import *
 
 def projector_zero(n_qubits):
 	# This function create the global projector |00...0><00...0|
-	from qiskit.aqua.operators            import Z, I
+	from qiskit.opflow            import Z, I
 
-	prj = (1/np.power(2,n_qubits))*(I+Z)
+	prj_list = [0.5*(I+Z) for i in range(n_qubits)]
+	prj = prj_list[0]
 
-	for a in range(n_qubits-1):
-		prj = prj^(I+Z)
+	for a in range(1,len(prj_list)):
+		prj = prj^prj_list[a]
 
 	return prj
 
