@@ -1,6 +1,6 @@
 # Projected - Variational Quantum Dynamics (p-VQD)
 
-[![DOI](https://zenodo.org/badge/359467906.svg)](https://zenodo.org/badge/latestdoi/359467906)]
+[![DOI](https://zenodo.org/badge/359467906.svg)](https://zenodo.org/badge/latestdoi/359467906)
 
 This repository contains the source code of the p-VQD algorithm to reproduce the results of the paper "An efficient quantum algorithm for the time evolution of parameterized circuits" (https://arxiv.org/abs/2101.04579).
 
